@@ -1,240 +1,181 @@
-import os
 import json
-from datetime import datetime
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup
-)
+import logging
+from datetime import datetime, timedelta
+from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import (
-    ApplicationBuilder,
-    ContextTypes,
-    CommandHandler,
-    CallbackQueryHandler,
-    MessageHandler,
-    ConversationHandler,
-    filters
+    ApplicationBuilder, CommandHandler, MessageHandler, filters,
+    CallbackContext, ConversationHandler
 )
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from collections import defaultdict
-from datetime import timedelta
 
-
-# === НАСТРОЙКИ ===
-TOKEN = "8114366222:AAHWPOiMQIanq-DcRmNEvam5aLyxKu1AOY8"  # экспортируй переменную TELEGRAM_BOT_TOKEN перед запуском
-DATA_FILE = "data.json"
+# Настройки
+TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
+DATA_FILE = "expenses.json"
 DAILY_LIMIT = 60
-CATEGORY, AMOUNT, COMMENT = range(3)
+CATEGORIES = ["еда", "кафе", "покупки", "алкоголь", "развлечения", "подарки", "здоровье", "животные", "прочее"]
 
-CATEGORIES = [
-    "еда", "кафе", "покупки", "алкоголь", "развлечения",
-    "подарки", "здоровье", "животные", "прочее"
-]
-
-# === ДАННЫЕ ===
-def get_today():
-    return datetime.now().strftime("%Y-%m-%d")
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 def load_data():
-    if os.path.exists(DATA_FILE):
+    try:
         with open(DATA_FILE, "r") as f:
             return json.load(f)
-    return {}
+    except FileNotFoundError:
+        return []
 
 def save_data(data):
     with open(DATA_FILE, "w") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
-data = load_data()
+def get_today_balance(data):
+    today = datetime.now().strftime("%Y-%m-%d")
+    total_spent = sum(e["amount"] for e in data if e["date"] == today)
+    return DAILY_LIMIT - total_spent
 
-def ensure_user(user_id):
-    today = get_today()
-    if user_id not in data:
-        data[user_id] = {}
-    if today not in data[user_id]:
-        data[user_id][today] = {
-            "balance": DAILY_LIMIT,
-            "expenses": []
-        }
+def start(update: Update, context: CallbackContext):
+    buttons = [["Добавить трату", "Баланс"], ["Траты", "Удалить последнюю трату"], ["Статистика"]]
+    reply_markup = ReplyKeyboardMarkup(buttons, resize_keyboard=True)
+    update.message.reply_text("Привет! Я бот для учёта трат.", reply_markup=reply_markup)
 
-# === ОБРАБОТЧИКИ ===
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [InlineKeyboardButton("➕ Добавить трату", callback_data="add")],
-        [
-            InlineKeyboardButton("💰 Баланс", callback_data="balance"),
-            InlineKeyboardButton("📋 Траты", callback_data="expenses")
-        ],
-        [InlineKeyboardButton("❌ Удалить последнюю трату", callback_data="delete_last")]
-    ]
-    markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Выберите действие:", reply_markup=markup)
+def balance(update: Update, context: CallbackContext):
+    data = load_data()
+    balance = get_today_balance(data)
+    update.message.reply_text(f"Текущий баланс на сегодня: ${balance:.2f}")
 
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data_choice = query.data
-    user_id = str(query.from_user.id)
-    ensure_user(user_id)
-
-    if data_choice == "balance":
-        bal = data[user_id][get_today()]["balance"]
-        await query.message.reply_text(f"Остаток: ${bal:.2f}")
-    elif data_choice == "expenses":
-        expenses = data[user_id][get_today()]["expenses"]
-        if not expenses:
-            await query.message.reply_text("Трат пока нет.")
-        else:
-            msg = "\n".join([f"- {e['category']}: ${e['amount']} ({e.get('comment', '')})" for e in expenses])
-            await query.message.reply_text("Сегодняшние траты:\n" + msg)
-    elif data_choice == "delete_last":
-        exp = data[user_id][get_today()]["expenses"]
-        if exp:
-            last = exp.pop()
-            data[user_id][get_today()]["balance"] += last["amount"]
-            save_data(data)
-            await query.message.reply_text(f"Удалено: {last['category']} - ${last['amount']}")
-        else:
-            await query.message.reply_text("Нет трат для удаления.")
-    elif data_choice == "add":
-        cat_buttons = [[InlineKeyboardButton(cat, callback_data=cat)] for cat in CATEGORIES]
-        markup = InlineKeyboardMarkup(cat_buttons)
-        await query.message.reply_text("Выберите категорию:", reply_markup=markup)
-        return CATEGORY
-
-# === ПОШАГОВОЕ ДОБАВЛЕНИЕ ТРАТ ===
-async def choose_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    context.user_data["category"] = query.data
-    await query.message.reply_text("Введите сумму:")
-    return AMOUNT
-
-async def enter_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        amount = float(update.message.text)
-        if amount <= 0:
-            raise ValueError
-        context.user_data["amount"] = amount
-        await update.message.reply_text("Введите комментарий или /skip:")
-        return COMMENT
-    except:
-        await update.message.reply_text("Неверная сумма. Повторите:")
-        return AMOUNT
-
-async def enter_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    return await finalize_expense(update, context, update.message.text)
-
-async def skip_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    return await finalize_expense(update, context, "")
-
-async def finalize_expense(update: Update, context: ContextTypes.DEFAULT_TYPE, comment):
-    user_id = str(update.effective_user.id)
-    ensure_user(user_id)
-
-    today = get_today()
-    amount = context.user_data["amount"]
-    category = context.user_data["category"]
-    balance = data[user_id][today]["balance"]
-
-    if amount > balance:
-        await update.message.reply_text("Недостаточно средств на сегодня.")
-    else:
-        data[user_id][today]["balance"] -= amount
-        data[user_id][today]["expenses"].append({
-            "amount": amount,
-            "category": category,
-            "comment": comment
-        })
-        save_data(data)
-
-        keyboard = [
-            [InlineKeyboardButton("➕ Добавить трату", callback_data="add")],
-            [
-                InlineKeyboardButton("💰 Баланс", callback_data="balance"),
-                InlineKeyboardButton("📋 Траты", callback_data="expenses")
-            ],
-            [InlineKeyboardButton("❌ Удалить последнюю трату", callback_data="delete_last")]
-        ]
-        markup = InlineKeyboardMarkup(keyboard)
-
-        await update.message.reply_text(
-            f"Трата добавлена: {category} - ${amount:.2f}",
-            reply_markup=markup
-        )
-
-    return ConversationHandler.END
-
-# === СТАТИСТИКА ===
-async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-    today = datetime.now().date()
-    stats = defaultdict(float)
-    total = 0.0
-
-    for i in range(7):
-        day = (today - timedelta(days=i)).strftime("%Y-%m-%d")
-        day_data = data.get(user_id, {}).get(day, {}).get("expenses", [])
-        for e in day_data:
-            stats[e["category"]] += e["amount"]
-            total += e["amount"]
-
-    if not total:
-        await update.message.reply_text("За последние 7 дней трат не найдено.")
+def list_expenses(update: Update, context: CallbackContext):
+    data = load_data()
+    today = datetime.now().strftime("%Y-%m-%d")
+    today_expenses = [e for e in data if e["date"] == today]
+    if not today_expenses:
+        update.message.reply_text("Сегодня ещё не было трат.")
         return
 
-    # Формируем вывод
-    lines = ["📊 Статистика за 7 дней:\n"]
-    for category, amount in sorted(stats.items(), key=lambda x: -x[1]):
-        percent = (amount / total) * 100
-        lines.append(f"- {category.capitalize()}: ${amount:.2f} ({percent:.1f}%)")
+    msg = "Траты за сегодня:
+"
+    for e in today_expenses:
+        user = f'@{e["username"]}' if e["username"] else f'ID {e["user_id"]}'
+        comment = f' ({e["comment"]})' if e["comment"] else ""
+        msg += f'- {e["category"]}: ${e["amount"]:.2f}{comment} — {user}
+'
+    update.message.reply_text(msg)
 
-    lines.append(f"\nИтого: ${total:.2f}")
-    await update.message.reply_text("\n".join(lines))
+def delete_last_expense(update: Update, context: CallbackContext):
+    data = load_data()
+    if not data:
+        update.message.reply_text("Список трат пуст.")
+        return
 
+    last = data.pop()
+    save_data(data)
+    update.message.reply_text(f"Удалена последняя трата: {last['category']} - ${last['amount']}")
 
-# === АВТОСБРОС ===
-def setup_daily_reset():
-    scheduler = AsyncIOScheduler()
+def stats(update: Update, context: CallbackContext):
+    data = load_data()
+    week_ago = datetime.now() - timedelta(days=7)
+    weekly = [e for e in data if datetime.strptime(e["date"], "%Y-%m-%d") >= week_ago]
 
-    def reset():
-        today = get_today()
-        for user_id in data:
-            data[user_id][today] = {
-                "balance": DAILY_LIMIT,
-                "expenses": []
-            }
-        save_data(data)
-        print(f"[⏰] Баланс сброшен: {today}")
+    if not weekly:
+        update.message.reply_text("За последние 7 дней трат не найдено.")
+        return
 
-    scheduler.add_job(reset, "cron", hour=0, minute=0)
-    scheduler.start()
+    category_totals = {}
+    for e in weekly:
+        category_totals[e["category"]] = category_totals.get(e["category"], 0) + e["amount"]
+    total = sum(category_totals.values())
 
-async def post_init(app):
-    setup_daily_reset()
+    msg = "📊 Статистика за 7 дней:
+"
+    for cat, amt in category_totals.items():
+        percent = (amt / total) * 100
+        msg += f"- {cat}: ${amt:.2f} ({percent:.1f}%)
+"
 
-# === ЗАПУСК ===
-if __name__ == "__main__":
-    app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
+    update.message.reply_text(msg)
+
+# --- Добавление траты ---
+CHOOSING_CATEGORY, TYPING_AMOUNT, TYPING_COMMENT = range(3)
+
+def add_expense_start(update: Update, context: CallbackContext):
+    buttons = [[cat] for cat in CATEGORIES]
+    reply_markup = ReplyKeyboardMarkup(buttons, one_time_keyboard=True, resize_keyboard=True)
+    update.message.reply_text("Выберите категорию:", reply_markup=reply_markup)
+    return CHOOSING_CATEGORY
+
+def category_chosen(update: Update, context: CallbackContext):
+    context.user_data["category"] = update.message.text
+    update.message.reply_text("Введите сумму:")
+    return TYPING_AMOUNT
+
+def amount_typed(update: Update, context: CallbackContext):
+    try:
+        amount = float(update.message.text.replace(",", "."))
+        context.user_data["amount"] = amount
+    except ValueError:
+        update.message.reply_text("Введите корректную сумму.")
+        return TYPING_AMOUNT
+
+    update.message.reply_text("Комментарий (опционально) или /skip:")
+    return TYPING_COMMENT
+
+def comment_typed(update: Update, context: CallbackContext):
+    context.user_data["comment"] = update.message.text
+    return save_expense(update, context)
+
+def skip_comment(update: Update, context: CallbackContext):
+    context.user_data["comment"] = ""
+    return save_expense(update, context)
+
+def save_expense(update: Update, context: CallbackContext):
+    data = load_data()
+    user = update.effective_user
+    expense = {
+        "date": datetime.now().strftime("%Y-%m-%d"),
+        "category": context.user_data["category"],
+        "amount": context.user_data["amount"],
+        "comment": context.user_data.get("comment", ""),
+        "user_id": user.id,
+        "username": user.username or ""
+    }
+    data.append(expense)
+    save_data(data)
+    update.message.reply_text("Трата добавлена.")
+    return ConversationHandler.END
+
+def cancel(update: Update, context: CallbackContext):
+    update.message.reply_text("Добавление отменено.")
+    return ConversationHandler.END
+
+# --- Основной запуск ---
+def main():
+    app = ApplicationBuilder().token(TOKEN).build()
 
     conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(button_handler, pattern="^add$")],
+        entry_points=[MessageHandler(filters.Regex("^(Добавить трату)$"), add_expense_start)],
         states={
-            CATEGORY: [CallbackQueryHandler(choose_category)],
-            AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_amount)],
-            COMMENT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, enter_comment),
-                CommandHandler("skip", skip_comment)
-            ]
+            CHOOSING_CATEGORY: [MessageHandler(filters.TEXT & ~filters.COMMAND, category_chosen)],
+            TYPING_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, amount_typed)],
+            TYPING_COMMENT: [
+                CommandHandler("skip", skip_comment),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, comment_typed)
+            ],
         },
-        fallbacks=[CommandHandler("skip", skip_comment)],
-        per_chat=True
+        fallbacks=[CommandHandler("cancel", cancel)],
     )
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("баланс", balance))
+    app.add_handler(CommandHandler("траты", list_expenses))
+    app.add_handler(CommandHandler("удалить", delete_last_expense))
+    app.add_handler(CommandHandler("статистика", stats))
     app.add_handler(conv)
-    app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(CommandHandler("stats", show_stats))
+    app.add_handler(MessageHandler(filters.Regex("^(Баланс)$"), balance))
+    app.add_handler(MessageHandler(filters.Regex("^(Траты)$"), list_expenses))
+    app.add_handler(MessageHandler(filters.Regex("^(Удалить последнюю трату)$"), delete_last_expense))
+    app.add_handler(MessageHandler(filters.Regex("^(Статистика)$"), stats))
+    app.add_handler(MessageHandler(filters.Regex("^(Добавить трату)$"), add_expense_start))
 
     print("🚀 Бот запущен")
     app.run_polling()
+
+if __name__ == "__main__":
+    main()
