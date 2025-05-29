@@ -1,5 +1,6 @@
 import os
 import json
+import re
 from datetime import datetime, timedelta
 from telegram import (
     Update,
@@ -20,7 +21,7 @@ from telegram.ext import (
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # === Настройки ===
-TOKEN = "8114366222:AAHWPOiMQIanq-DcRmNEvam5aLyxKu1AOY8"
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8114366222:AAHWPOiMQIanq-DcRmNEvam5aLyxKu1AOY8")
 DATA_FILE = "expenses.json"
 DAILY_LIMIT = 60
 CATEGORIES = [
@@ -28,27 +29,27 @@ CATEGORIES = [
     "Entertainment", "Gifts", "Health", "Pets", "Other"
 ]
 
-# состояния для ConversationHandler
+# Состояния для ConversationHandler
 ADD_CATEGORY, ADD_AMOUNT, ADD_COMMENT = range(3)
 
 
 # === Работа с данными ===
-def load_data():
+def load_data() -> list:
     if not os.path.exists(DATA_FILE):
         return []
     try:
-        with open(DATA_FILE, "r") as f:
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except json.JSONDecodeError:
         return []
 
 
-def save_data(data):
-    with open(DATA_FILE, "w") as f:
+def save_data(data: list):
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-def get_today_balance(data):
+def get_today_balance(data: list) -> float:
     today = datetime.now().strftime("%Y-%m-%d")
     spent = sum(e["amount"] for e in data if e["date"] == today)
     return DAILY_LIMIT - spent
@@ -89,7 +90,7 @@ async def list_expenses(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg)
 
 
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_data()
     week_ago = datetime.now() - timedelta(days=7)
     weekly = [
@@ -117,7 +118,7 @@ async def delete_last(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not data:
         await update.message.reply_text("No expenses to delete.")
         return
-    last = data.pop()  # удаляем последнюю запись
+    last = data.pop()
     save_data(data)
     await update.message.reply_text(
         f"Deleted last expense: {last['category']} "
@@ -125,12 +126,9 @@ async def delete_last(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# --- Добавление траты через ConversationHandler ---
+# --- ConversationHandler для добавления траты ---
 async def add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [InlineKeyboardButton(cat, callback_data=cat)]
-        for cat in CATEGORIES
-    ]
+    keyboard = [[InlineKeyboardButton(cat, callback_data=cat)] for cat in CATEGORIES]
     markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text("Choose a category:", reply_markup=markup)
     return ADD_CATEGORY
@@ -140,9 +138,7 @@ async def add_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     context.user_data["category"] = query.data
-    await query.edit_message_text(
-        f"Category: {query.data}\nNow enter amount in $:"
-    )
+    await query.edit_message_text(f"Category: {query.data}\nNow enter amount in $:")
     return ADD_AMOUNT
 
 
@@ -153,9 +149,7 @@ async def add_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Please enter a valid number.")
         return ADD_AMOUNT
     context.user_data["amount"] = amt
-    await update.message.reply_text(
-        "Enter comment or /skip to skip:"
-    )
+    await update.message.reply_text("Enter comment or /skip to skip:")
     return ADD_COMMENT
 
 
@@ -189,48 +183,48 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-# === Автоматический ежедневный сброс (лишь для примера) ===
+# === Планировщик (опционально) ===
 def schedule_daily_reset(app):
-    sched = AsyncIOScheduler()
-    # здесь можно очищать прошлые данные или уведомлять
-    sched.start()
+    scheduler = AsyncIOScheduler()
+    # Пример: очищать файл каждую ночь
+    # scheduler.add_job(lambda: save_data([]), 'cron', hour=0, minute=0)
+    scheduler.start()
 
 
-# === Точка входа ===
+# === Запуск ===
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).build()
     schedule_daily_reset(app)
 
     conv = ConversationHandler(
-        entry_points=[CommandHandler("add", add_start)],
+        entry_points=[
+            CommandHandler("add", add_start),
+            MessageHandler(filters.Regex(r"(?i)^add expense$"), add_start)
+        ],
         states={
             ADD_CATEGORY: [CallbackQueryHandler(add_category)],
             ADD_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_amount)],
             ADD_COMMENT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_comment),
-                CommandHandler("skip", skip_comment)
+                CommandHandler("skip", skip_comment),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_comment)
             ],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
-        per_message=True,
     )
 
-    # Основные команды
+    # Регистрация хендлеров
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("balance", balance))
     app.add_handler(CommandHandler("expenses", list_expenses))
-    app.add_handler(CommandHandler("stats", stats))
+    app.add_handler(CommandHandler("stats", show_stats))
     app.add_handler(CommandHandler("delete", delete_last))
-
-    # Кнопки меню через MessageHandler по тексту
-    app.add_handler(MessageHandler(filters.Regex(r"^(?i)add expense$"), add_start))
-    app.add_handler(MessageHandler(filters.Regex(r"^(?i)balance$"), balance))
-    app.add_handler(MessageHandler(filters.Regex(r"^(?i)expenses$"), list_expenses))
-    app.add_handler(MessageHandler(filters.Regex(r"^(?i)stats$"), stats))
-    app.add_handler(MessageHandler(filters.Regex(r"^(?i)delete last$"), delete_last))
-
-    # ConversationHandler
     app.add_handler(conv)
+
+    # Обработка нажатий на кнопки клавиатуры
+    app.add_handler(MessageHandler(filters.Regex(r"(?i)^balance$"), balance))
+    app.add_handler(MessageHandler(filters.Regex(r"(?i)^expenses$"), list_expenses))
+    app.add_handler(MessageHandler(filters.Regex(r"(?i)^stats$"), show_stats))
+    app.add_handler(MessageHandler(filters.Regex(r"(?i)^delete last$"), delete_last))
 
     print("🚀 Bot started")
     app.run_polling()
