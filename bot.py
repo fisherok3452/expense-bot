@@ -7,7 +7,6 @@ from telegram.ext import (
     CallbackContext, ConversationHandler
 )
 
-# Настройки
 TOKEN = "8114366222:AAHWPOiMQIanq-DcRmNEvam5aLyxKu1AOY8"
 DATA_FILE = "expenses.json"
 DAILY_LIMIT = 60
@@ -32,49 +31,48 @@ def get_today_balance(data):
     total_spent = sum(e["amount"] for e in data if e["date"] == today)
     return DAILY_LIMIT - total_spent
 
-def start(update: Update, context: CallbackContext):
+async def start(update: Update, context: CallbackContext):
     buttons = [["Добавить трату", "Баланс"], ["Траты", "Удалить последнюю трату"], ["Статистика"]]
     reply_markup = ReplyKeyboardMarkup(buttons, resize_keyboard=True)
-    update.message.reply_text("Привет! Я бот для учёта трат.", reply_markup=reply_markup)
+    await update.message.reply_text("Привет! Я бот для учёта трат.", reply_markup=reply_markup)
 
-def balance(update: Update, context: CallbackContext):
+async def balance(update: Update, context: CallbackContext):
     data = load_data()
     balance = get_today_balance(data)
-    update.message.reply_text(f"Текущий баланс на сегодня: ${balance:.2f}")
+    await update.message.reply_text(f"Текущий баланс на сегодня: ${balance:.2f}")
 
-def list_expenses(update: Update, context: CallbackContext):
+async def list_expenses(update: Update, context: CallbackContext):
     data = load_data()
     today = datetime.now().strftime("%Y-%m-%d")
     today_expenses = [e for e in data if e["date"] == today]
     if not today_expenses:
-        update.message.reply_text("Сегодня ещё не было трат.")
+        await update.message.reply_text("Сегодня ещё не было трат.")
         return
 
     msg = "Траты за сегодня:"
-    
     for e in today_expenses:
         user = f'@{e["username"]}' if e["username"] else f'ID {e["user_id"]}'
         comment = f' ({e["comment"]})' if e["comment"] else ""
         msg += f'- {e["category"]}: ${e["amount"]:.2f}{comment} — {user}'
-    update.message.reply_text(msg)
+    await update.message.reply_text(msg)
 
-def delete_last_expense(update: Update, context: CallbackContext):
+async def delete_last_expense(update: Update, context: CallbackContext):
     data = load_data()
     if not data:
-        update.message.reply_text("Список трат пуст.")
+        await update.message.reply_text("Список трат пуст.")
         return
 
     last = data.pop()
     save_data(data)
-    update.message.reply_text(f"Удалена последняя трата: {last['category']} - ${last['amount']}")
+    await update.message.reply_text(f"Удалена последняя трата: {last['category']} - ${last['amount']}")
 
-def stats(update: Update, context: CallbackContext):
+async def stats(update: Update, context: CallbackContext):
     data = load_data()
     week_ago = datetime.now() - timedelta(days=7)
     weekly = [e for e in data if datetime.strptime(e["date"], "%Y-%m-%d") >= week_ago]
 
     if not weekly:
-        update.message.reply_text("За последние 7 дней трат не найдено.")
+        await update.message.reply_text("За последние 7 дней трат не найдено.")
         return
 
     category_totals = {}
@@ -87,42 +85,42 @@ def stats(update: Update, context: CallbackContext):
         percent = (amt / total) * 100
         msg += f"- {cat}: ${amt:.2f} ({percent:.1f}%)"
 
-    update.message.reply_text(msg)
+    await update.message.reply_text(msg)
 
 # --- Добавление траты ---
 CHOOSING_CATEGORY, TYPING_AMOUNT, TYPING_COMMENT = range(3)
 
-def add_expense_start(update: Update, context: CallbackContext):
+async def add_expense_start(update: Update, context: CallbackContext):
     buttons = [[cat] for cat in CATEGORIES]
     reply_markup = ReplyKeyboardMarkup(buttons, one_time_keyboard=True, resize_keyboard=True)
-    update.message.reply_text("Выберите категорию:", reply_markup=reply_markup)
+    await update.message.reply_text("Выберите категорию:", reply_markup=reply_markup)
     return CHOOSING_CATEGORY
 
-def category_chosen(update: Update, context: CallbackContext):
+async def category_chosen(update: Update, context: CallbackContext):
     context.user_data["category"] = update.message.text
-    update.message.reply_text("Введите сумму:")
+    await update.message.reply_text("Введите сумму:")
     return TYPING_AMOUNT
 
-def amount_typed(update: Update, context: CallbackContext):
+async def amount_typed(update: Update, context: CallbackContext):
     try:
         amount = float(update.message.text.replace(",", "."))
         context.user_data["amount"] = amount
     except ValueError:
-        update.message.reply_text("Введите корректную сумму.")
+        await update.message.reply_text("Введите корректную сумму.")
         return TYPING_AMOUNT
 
-    update.message.reply_text("Комментарий (опционально) или /skip:")
+    await update.message.reply_text("Комментарий (опционально) или /skip:")
     return TYPING_COMMENT
 
-def comment_typed(update: Update, context: CallbackContext):
+async def comment_typed(update: Update, context: CallbackContext):
     context.user_data["comment"] = update.message.text
     return save_expense(update, context)
 
-def skip_comment(update: Update, context: CallbackContext):
+async def skip_comment(update: Update, context: CallbackContext):
     context.user_data["comment"] = ""
     return save_expense(update, context)
 
-def save_expense(update: Update, context: CallbackContext):
+async def save_expense(update: Update, context: CallbackContext):
     data = load_data()
     user = update.effective_user
     expense = {
@@ -135,14 +133,13 @@ def save_expense(update: Update, context: CallbackContext):
     }
     data.append(expense)
     save_data(data)
-    update.message.reply_text("Трата добавлена.")
+    await update.message.reply_text("Трата добавлена.")
     return ConversationHandler.END
 
-def cancel(update: Update, context: CallbackContext):
-    update.message.reply_text("Добавление отменено.")
+async def cancel(update: Update, context: CallbackContext):
+    await update.message.reply_text("Добавление отменено.")
     return ConversationHandler.END
 
-# --- Основной запуск ---
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
