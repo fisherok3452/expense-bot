@@ -1,156 +1,163 @@
+
 import json
-import logging
+import os
 from datetime import datetime, timedelta
-from telegram import Update, ReplyKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler, filters,
-    CallbackContext, ConversationHandler
+    Application, CommandHandler, ContextTypes, MessageHandler,
+    ConversationHandler, CallbackQueryHandler, filters
 )
 
 TOKEN = "8114366222:AAHWPOiMQIanq-DcRmNEvam5aLyxKu1AOY8"
-DATA_FILE = "expenses.json"
-DAILY_LIMIT = 60
-CATEGORIES = ["еда", "кафе", "покупки", "алкоголь", "развлечения", "подарки", "здоровье", "животные", "прочее"]
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+DATA_FILE = "expenses.json"
+CATEGORIES = ["Food", "Cafe", "Shopping", "Alcohol", "Entertainment", "Gifts", "Health", "Pets", "Other"]
+DAILY_LIMIT = 60
+
+ADD_EXPENSE, ADD_AMOUNT, ADD_COMMENT = range(3)
 
 def load_data():
-    try:
-        with open(DATA_FILE, "r") as f:
-            return json.load(f)
-    except FileNotFoundError:
+    if not os.path.exists(DATA_FILE):
         return []
+    with open(DATA_FILE, "r") as f:
+        try:
+            return json.load(f)
+        except json.JSONDecodeError:
+            return []
 
 def save_data(data):
     with open(DATA_FILE, "w") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
 def get_today_balance(data):
     today = datetime.now().strftime("%Y-%m-%d")
     total_spent = sum(e["amount"] for e in data if e["date"] == today)
     return DAILY_LIMIT - total_spent
 
-async def start(update: Update, context: CallbackContext):
-    buttons = [["Добавить трату", "Баланс"], ["Траты", "Удалить последнюю трату"], ["Статистика"]]
-    reply_markup = ReplyKeyboardMarkup(buttons, resize_keyboard=True)
-    await update.message.reply_text("Привет! Я бот для учёта трат.", reply_markup=reply_markup)
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [KeyboardButton("➕ Add Expense")],
+        [KeyboardButton("💰 Balance"), KeyboardButton("📄 Expenses")],
+        [KeyboardButton("📊 Stats"), KeyboardButton("❌ Delete Last")]
+    ]
+    markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    await update.message.reply_text("Hello! I'm your expense tracking bot.", reply_markup=markup)
 
-async def balance(update: Update, context: CallbackContext):
+async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_data()
     balance = get_today_balance(data)
-    await update.message.reply_text(f"Текущий баланс на сегодня: ${balance:.2f}")
+    await update.message.reply_text(f"💰 Today's balance: ${balance:.2f}")
 
-async def list_expenses(update: Update, context: CallbackContext):
+async def list_expenses(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_data()
     today = datetime.now().strftime("%Y-%m-%d")
     today_expenses = [e for e in data if e["date"] == today]
     if not today_expenses:
-        await update.message.reply_text("Сегодня ещё не было трат.")
+        await update.message.reply_text("No expenses for today.")
         return
 
-    msg = "Траты за сегодня:"
+    msg = "📄 Today's Expenses:"
     for e in today_expenses:
-        user = f'@{e["username"]}' if e["username"] else f'ID {e["user_id"]}'
-        comment = f' ({e["comment"]})' if e["comment"] else ""
-        msg += f'- {e["category"]}: ${e["amount"]:.2f}{comment} — {user}'
+        comment = f" ({e['comment']})" if e.get("comment") else ""
+        msg += f"- {e['category']}: ${e['amount']:.2f}{comment} — {e['user']}"
     await update.message.reply_text(msg)
 
-async def delete_last_expense(update: Update, context: CallbackContext):
+async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = load_data()
+    cutoff = datetime.now() - timedelta(days=7)
+    filtered = [e for e in data if datetime.strptime(e["date"], "%Y-%m-%d") >= cutoff]
+
+    category_totals = {}
+    for e in filtered:
+        category_totals[e["category"]] = category_totals.get(e["category"], 0) + e["amount"]
+
+    total = sum(category_totals.values())
+    if total == 0:
+        await update.message.reply_text("No expenses in the last 7 days.")
+        return
+
+    msg = "📊 Stats for last 7 days:"
+    for cat, amt in category_totals.items():
+        percent = (amt / total) * 100
+        msg += "- {}: ${:.2f} ({:.1f}%)\n".format(cat, amt, percent)
+
+    await update.message.reply_text(msg)
+
+async def delete_last(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_data()
     if not data:
-        await update.message.reply_text("Список трат пуст.")
+        await update.message.reply_text("No expenses to delete.")
         return
 
     last = data.pop()
     save_data(data)
-    await update.message.reply_text(f"Удалена последняя трата: {last['category']} - ${last['amount']}")
+    await update.message.reply_text(f"Deleted: {last['category']} ${last['amount']:.2f} by {last['user']}")
 
-async def stats(update: Update, context: CallbackContext):
-    data = load_data()
-    week_ago = datetime.now() - timedelta(days=7)
-    weekly = [e for e in data if datetime.strptime(e["date"], "%Y-%m-%d") >= week_ago]
+async def add_expense_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [[InlineKeyboardButton(c, callback_data=c)] for c in CATEGORIES]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("Choose a category:", reply_markup=reply_markup)
+    return ADD_EXPENSE
 
-    if not weekly:
-        await update.message.reply_text("За последние 7 дней трат не найдено.")
-        return
+async def category_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data["category"] = query.data
+    await query.edit_message_text("Category: {}
+Now enter amount in $:".format(query.data))
+    return ADD_AMOUNT
 
-    category_totals = {}
-    for e in weekly:
-        category_totals[e["category"]] = category_totals.get(e["category"], 0) + e["amount"]
-    total = sum(category_totals.values())
-
-    msg = "📊 Статистика за 7 дней:"
-    for cat, amt in category_totals.items():
-        percent = (amt / total) * 100
-        msg += f"- {cat}: ${amt:.2f} ({percent:.1f}%)"
-
-    await update.message.reply_text(msg)
-
-# --- Добавление траты ---
-CHOOSING_CATEGORY, TYPING_AMOUNT, TYPING_COMMENT = range(3)
-
-async def add_expense_start(update: Update, context: CallbackContext):
-    buttons = [[cat] for cat in CATEGORIES]
-    reply_markup = ReplyKeyboardMarkup(buttons, one_time_keyboard=True, resize_keyboard=True)
-    await update.message.reply_text("Выберите категорию:", reply_markup=reply_markup)
-    return CHOOSING_CATEGORY
-
-async def category_chosen(update: Update, context: CallbackContext):
-    context.user_data["category"] = update.message.text
-    await update.message.reply_text("Введите сумму:")
-    return TYPING_AMOUNT
-
-async def amount_typed(update: Update, context: CallbackContext):
+async def amount_typed(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        amount = float(update.message.text.replace(",", "."))
-        context.user_data["amount"] = amount
+        amount = float(update.message.text)
     except ValueError:
-        await update.message.reply_text("Введите корректную сумму.")
-        return TYPING_AMOUNT
+        await update.message.reply_text("Please enter a valid number.")
+        return ADD_AMOUNT
 
-    await update.message.reply_text("Комментарий (опционально) или /skip:")
-    return TYPING_COMMENT
+    context.user_data["amount"] = amount
+    await update.message.reply_text("Add a comment or type /skip to skip:")
+    return ADD_COMMENT
 
-async def comment_typed(update: Update, context: CallbackContext):
+async def comment_typed(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["comment"] = update.message.text
-    return save_expense(update, context)
+    return await save_expense(update, context)
 
-async def skip_comment(update: Update, context: CallbackContext):
+async def skip_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["comment"] = ""
-    return save_expense(update, context)
+    return await save_expense(update, context)
 
-async def save_expense(update: Update, context: CallbackContext):
+async def save_expense(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_data()
-    user = update.effective_user
-    expense = {
+    entry = {
+        "user": update.effective_user.first_name,
         "date": datetime.now().strftime("%Y-%m-%d"),
         "category": context.user_data["category"],
         "amount": context.user_data["amount"],
-        "comment": context.user_data.get("comment", ""),
-        "user_id": user.id,
-        "username": user.username or ""
+        "comment": context.user_data.get("comment", "")
     }
-    data.append(expense)
+    data.append(entry)
     save_data(data)
-    await update.message.reply_text("Трата добавлена.")
+    await update.message.reply_text("Expense saved.")
     return ConversationHandler.END
 
-async def cancel(update: Update, context: CallbackContext):
-    await update.message.reply_text("Добавление отменено.")
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Cancelled.")
     return ConversationHandler.END
 
 def main():
-    app = ApplicationBuilder().token(TOKEN).build()
+    app = Application.builder().token(TOKEN).build()
 
-    conv = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("^(Добавить трату)$"), add_expense_start)],
+    conv_handler = ConversationHandler(
+        entry_points=[
+            CommandHandler("add", add_expense_start),
+            MessageHandler(filters.Regex("(?i)^\+? add expense"), add_expense_start)
+        ],
         states={
-            CHOOSING_CATEGORY: [MessageHandler(filters.TEXT & ~filters.COMMAND, category_chosen)],
-            TYPING_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, amount_typed)],
-            TYPING_COMMENT: [
-                CommandHandler("skip", skip_comment),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, comment_typed)
+            ADD_EXPENSE: [CallbackQueryHandler(category_chosen)],
+            ADD_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, amount_typed)],
+            ADD_COMMENT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, comment_typed),
+                CommandHandler("skip", skip_comment)
             ],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
@@ -159,16 +166,15 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("balance", balance))
     app.add_handler(CommandHandler("expenses", list_expenses))
-    app.add_handler(CommandHandler("delete", delete_last_expense))
-    app.add_handler(CommandHandler("stats", stats))
-    app.add_handler(conv)
-    app.add_handler(MessageHandler(filters.Regex("^(Баланс)$"), balance))
-    app.add_handler(MessageHandler(filters.Regex("^(Траты)$"), list_expenses))
-    app.add_handler(MessageHandler(filters.Regex("^(Удалить последнюю трату)$"), delete_last_expense))
-    app.add_handler(MessageHandler(filters.Regex("^(Статистика)$"), stats))
-    app.add_handler(MessageHandler(filters.Regex("^(Добавить трату)$"), add_expense_start))
+    app.add_handler(CommandHandler("stats", show_stats))
+    app.add_handler(CommandHandler("delete", delete_last))
+    app.add_handler(conv_handler)
 
-    print("🚀 Бот запущен")
+    app.add_handler(MessageHandler(filters.Regex("(?i)^balance"), balance))
+    app.add_handler(MessageHandler(filters.Regex("(?i)^expenses"), list_expenses))
+    app.add_handler(MessageHandler(filters.Regex("(?i)^stats"), show_stats))
+    app.add_handler(MessageHandler(filters.Regex("(?i)^delete"), delete_last))
+
     app.run_polling()
 
 if __name__ == "__main__":
