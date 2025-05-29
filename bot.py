@@ -50,7 +50,7 @@ def list_expenses(update: Update, context: CallbackContext):
         update.message.reply_text("Сегодня ещё не было трат.")
         return
 
-    msg = "Траты за сегодня:
+    msg = "Траты за сегодня:"
 "
     for e in today_expenses:
         user = f'@{e["username"]}' if e["username"] else f'ID {e["user_id"]}'
