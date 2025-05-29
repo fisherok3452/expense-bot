@@ -149,7 +149,7 @@ def main():
     conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler("add", add_expense_start),
-            MessageHandler(filters.Regex("(?i)^\+? add expense"), add_expense_start)
+            MessageHandler(filters.Regex(r"(?i)^\+? add expense"), add_expense_start)
         ],
         states={
             ADD_EXPENSE: [CallbackQueryHandler(category_chosen)],
