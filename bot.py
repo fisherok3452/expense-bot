@@ -8,7 +8,7 @@ from telegram.ext import (
 )
 
 # Настройки
-TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
+TOKEN = "8114366222:AAHWPOiMQIanq-DcRmNEvam5aLyxKu1AOY8"
 DATA_FILE = "expenses.json"
 DAILY_LIMIT = 60
 CATEGORIES = ["еда", "кафе", "покупки", "алкоголь", "развлечения", "подарки", "здоровье", "животные", "прочее"]
