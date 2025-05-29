@@ -14,9 +14,9 @@ from telegram.ext import (
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # === Настройки ===
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TOKEN = "8114366222:AAHWPOiMQIanq-DcRmNEvam5aLyxKu1AOY8"
 DATA_FILE = "data.json"
-DAILY_LIMIT = 50
+DAILY_LIMIT = 60
 CATEGORY, AMOUNT, COMMENT = range(3)
 
 CATEGORIES = [
