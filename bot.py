@@ -55,8 +55,7 @@ def list_expenses(update: Update, context: CallbackContext):
     for e in today_expenses:
         user = f'@{e["username"]}' if e["username"] else f'ID {e["user_id"]}'
         comment = f' ({e["comment"]})' if e["comment"] else ""
-        msg += f'- {e["category"]}: ${e["amount"]:.2f}{comment} — {user}
-'
+        msg += f'- {e["category"]}: ${e["amount"]:.2f}{comment} — {user}'
     update.message.reply_text(msg)
 
 def delete_last_expense(update: Update, context: CallbackContext):
@@ -83,12 +82,10 @@ def stats(update: Update, context: CallbackContext):
         category_totals[e["category"]] = category_totals.get(e["category"], 0) + e["amount"]
     total = sum(category_totals.values())
 
-    msg = "📊 Статистика за 7 дней:
-"
+    msg = "📊 Статистика за 7 дней:"
     for cat, amt in category_totals.items():
         percent = (amt / total) * 100
-        msg += f"- {cat}: ${amt:.2f} ({percent:.1f}%)
-"
+        msg += f"- {cat}: ${amt:.2f} ({percent:.1f}%)"
 
     update.message.reply_text(msg)
 
