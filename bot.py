@@ -103,8 +103,7 @@ async def category_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     context.user_data["category"] = query.data
-    await query.edit_message_text("Category: {}
-Now enter amount in $:".format(query.data))
+    await query.edit_message_text(f"Category: {query.data}\nNow enter amount in $:")
     return ADD_AMOUNT
 
 async def amount_typed(update: Update, context: ContextTypes.DEFAULT_TYPE):
